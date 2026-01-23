@@ -84,7 +84,6 @@
 
 
 
-
 import { Webhook } from "svix";
 import User from "../models/User.js";
 
@@ -92,9 +91,8 @@ export const clerkWebhooks = async (req, res) => {
   try {
     const whook = new Webhook(process.env.CLERK_WEBHOOK_SECRET);
 
-    const payload = JSON.stringify(req.body);
-
-    await whook.verify(payload, {
+    // ✅ Verify Clerk signature
+    whook.verify(JSON.stringify(req.body), {
       "svix-id": req.headers["svix-id"],
       "svix-timestamp": req.headers["svix-timestamp"],
       "svix-signature": req.headers["svix-signature"],
@@ -102,35 +100,62 @@ export const clerkWebhooks = async (req, res) => {
 
     const { data, type } = req.body;
 
-    if (type === "user.created") {
-      const userData = {
-        _id: data.id,
-        email: data.email_addresses?.[0]?.email_address || "",
-        name: `${data.first_name || ""} ${data.last_name || ""}`,
-        image: data.image_url || "",
-        resume: "",
-      };
+    // ✅ Safely extract email
+    const email =
+      data.email_addresses &&
+      data.email_addresses.length > 0 &&
+      data.email_addresses[0].email_address
+        ? data.email_addresses[0].email_address
+        : null;
 
-      await User.create(userData);
+    switch (type) {
+      case "user.created": {
+        if (!email) {
+          console.log("⚠️ User created without email, skipping DB save");
+          return res.status(200).json({ ok: true });
+        }
+
+        const userData = {
+          _id: data.id,
+          email: email,
+          name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
+          image: data.image_url || "",
+          resume: "",
+        };
+
+        // ✅ Prevent duplicate users
+        await User.findByIdAndUpdate(data.id, userData, {
+          upsert: true,
+          new: true,
+        });
+
+        return res.status(200).json({ ok: true });
+      }
+
+      case "user.updated": {
+        if (!email) {
+          return res.status(200).json({ ok: true });
+        }
+
+        await User.findByIdAndUpdate(data.id, {
+          email: email,
+          name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
+          image: data.image_url || "",
+        });
+
+        return res.status(200).json({ ok: true });
+      }
+
+      case "user.deleted": {
+        await User.findByIdAndDelete(data.id);
+        return res.status(200).json({ ok: true });
+      }
+
+      default:
+        return res.status(200).json({ ok: true });
     }
-
-    if (type === "user.updated") {
-      const userData = {
-        email: data.email_addresses?.[0]?.email_address || "",
-        name: `${data.first_name || ""} ${data.last_name || ""}`,
-        image: data.image_url || "",
-      };
-
-      await User.findByIdAndUpdate(data.id, userData);
-    }
-
-    if (type === "user.deleted") {
-      await User.findByIdAndDelete(data.id);
-    }
-
-    res.status(200).json({ success: true });
   } catch (error) {
     console.error("Webhook error:", error.message);
-    res.status(400).json({ success: false });
+    return res.status(400).json({ success: false });
   }
 };
