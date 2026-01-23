@@ -77,13 +77,6 @@
 
 
 
-
-
-
-
-
-
-
 import { Webhook } from "svix";
 import User from "../models/User.js";
 
@@ -91,71 +84,52 @@ export const clerkWebhooks = async (req, res) => {
   try {
     const whook = new Webhook(process.env.CLERK_WEBHOOK_SECRET);
 
-    // ✅ Verify Clerk signature
-    whook.verify(JSON.stringify(req.body), {
+    const payload = req.body.toString("utf8");
+
+    const event = whook.verify(payload, {
       "svix-id": req.headers["svix-id"],
       "svix-timestamp": req.headers["svix-timestamp"],
       "svix-signature": req.headers["svix-signature"],
     });
 
-    const { data, type } = req.body;
+    const { data, type } = event;
 
-    // ✅ Safely extract email
-    const email =
-      data.email_addresses &&
-      data.email_addresses.length > 0 &&
-      data.email_addresses[0].email_address
-        ? data.email_addresses[0].email_address
-        : null;
+    const email = data.email_addresses?.[0]?.email_address || null;
 
-    switch (type) {
-      case "user.created": {
-        if (!email) {
-          console.log("⚠️ User created without email, skipping DB save");
-          return res.status(200).json({ ok: true });
-        }
+    if (type === "user.created") {
+      if (!email) return res.status(200).json({ ok: true });
 
-        const userData = {
-          _id: data.id,
-          email: email,
-          name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
-          image: data.image_url || "",
-          resume: "",
-        };
+      const userData = {
+        _id: data.id,
+        email,
+        name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
+        image: data.image_url || "",
+        resume: "",
+      };
 
-        // ✅ Prevent duplicate users
-        await User.findByIdAndUpdate(data.id, userData, {
-          upsert: true,
-          new: true,
-        });
+      await User.findByIdAndUpdate(data.id, userData, {
+        upsert: true,
+        new: true,
+      });
 
-        return res.status(200).json({ ok: true });
-      }
-
-      case "user.updated": {
-        if (!email) {
-          return res.status(200).json({ ok: true });
-        }
-
-        await User.findByIdAndUpdate(data.id, {
-          email: email,
-          name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
-          image: data.image_url || "",
-        });
-
-        return res.status(200).json({ ok: true });
-      }
-
-      case "user.deleted": {
-        await User.findByIdAndDelete(data.id);
-        return res.status(200).json({ ok: true });
-      }
-
-      default:
-        return res.status(200).json({ ok: true });
+      console.log("✅ User saved:", email);
     }
+
+    if (type === "user.updated") {
+      await User.findByIdAndUpdate(data.id, {
+        email,
+        name: `${data.first_name || ""} ${data.last_name || ""}`.trim(),
+        image: data.image_url || "",
+      });
+    }
+
+    if (type === "user.deleted") {
+      await User.findByIdAndDelete(data.id);
+    }
+
+    return res.status(200).json({ ok: true });
   } catch (error) {
-    console.error("Webhook error:", error.message);
+    console.error("❌ Webhook error:", error);
     return res.status(400).json({ success: false });
   }
 };
